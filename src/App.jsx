@@ -46,18 +46,21 @@ const CONDITIONS = {
     short:"Antidepressant effect: moderate-to-large (Hedges g ≈ −0.6 vs control; walking/jogging g ≈ −0.62, Noetel 2024). Certainty: LOW.",
     guidance:"More is not better — a sustainable ~150 min/week beat higher volumes in trials. Prioritize consistency; expect benefit in ~8–12 weeks.",
     effect:"g ≈ −0.6 (moderate–large), low certainty",
+    celebrate:"aerobic exercise is associated with a moderate-to-large antidepressant effect (Hedges g ≈ −0.6 vs. control)",
   },
   anxiety: {
     label:"Anxiety",
     short:"Anti-anxiety effect: moderate (SMD ≈ −0.42 to −0.47 vs control). Lower certainty than depression; small trials.",
     guidance:"Treatment effects are modest but real; moderate–vigorous movement tends to help most, though any movement counts. (Separately, observational data link higher activity to lower risk of developing anxiety — that's prevention, not symptom relief.)",
     effect:"SMD ≈ −0.45 (moderate), low certainty",
+    celebrate:"aerobic exercise is associated with a moderate anti-anxiety effect (SMD ≈ −0.45 vs. control)",
   },
   general: {
     label:"General mood / prevention",
     short:"Meeting WHO activity (~600 MET-min/wk) is associated with 8–14% lower risk of developing anxiety; ~1800 MET-min/wk (~30 MET-h) with ~16% lower risk.",
     guidance:"These are prevention (risk-reduction) figures from observational studies — not a treatment effect for existing symptoms.",
     effect:"8–16% lower incident-anxiety risk (prevention)",
+    celebrate:"you're in the range linked to roughly 8–16% lower risk of developing anxiety",
   },
 };
 
@@ -117,6 +120,7 @@ const DEFAULT_SETTINGS = {
   age: 35, sex: "", weightLb: 160, unit: "lb",
   restingHR: 60, maxHR: null, vo2max: null, metMax: 10,
   condition: "general", reminderTime: "", reminderEnabled: false,
+  daysPerWeek: 5, // active days/week → drives the daily MET-min target
 };
 const INITIAL_DATA = {
   sessions: [],
@@ -125,8 +129,15 @@ const INITIAL_DATA = {
   ifThenPlan: { cue: "", action: "" },
   streak: { current: 0, best: 0, freezes: 1, history: {} },
   lastCelebratedWeek: null,
+  lastCelebratedDay: null,
   settings: { ...DEFAULT_SETTINGS },
 };
+
+// Daily MET-min target = weekly goal spread across the user's active days/week.
+function dailyTargetOf(weeklyGoal, daysPerWeek) {
+  const dpw = Math.min(7, Math.max(1, Number(daysPerWeek) || 5));
+  return Math.max(1, Math.round((Number(weeklyGoal) || DOSE.MIN) / dpw));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION → METs/MET-min  (compute from stored inputs using settings)
@@ -450,6 +461,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toast, setToast] = useState(null);
+  const [celebrate, setCelebrate] = useState(null);
 
   const settings = useMemo(() => ({ ...DEFAULT_SETTINGS, ...(data.settings || {}) }), [data.settings]);
   const weekStart = data.weekStartDate || currentWeekMonday();
@@ -462,19 +474,28 @@ export default function App() {
     setTimeout(() => setToast(null), 3400);
   };
 
-  // Save a session; celebrate if it crosses the weekly dose for the first time this week.
+  // Save a session; fire a daily toast and a weekly celebration pop-up on first crossing.
   const saveSession = (sess) => {
-    let crossed = false;
+    const mm = Number(sess.metMinutes) || 0;
+    let weeklyCrossed = false, dailyCrossed = false, weekTotal = 0;
     persist((prev) => {
       const ws = prev.weekStartDate || currentWeekMonday();
       const g = prev.weeklyGoalMetMin || DOSE.MIN;
-      const before = weekMetMin(prev.sessions, ws);
-      const after = before + (Number(sess.metMinutes) || 0);
-      crossed = before < g && after >= g && prev.lastCelebratedWeek !== ws;
-      return { ...prev, sessions: [...prev.sessions, sess], lastCelebratedWeek: crossed ? ws : prev.lastCelebratedWeek };
+      const beforeW = weekMetMin(prev.sessions, ws);
+      weekTotal = beforeW + mm;
+      weeklyCrossed = beforeW < g && weekTotal >= g && prev.lastCelebratedWeek !== ws;
+      const dTarget = dailyTargetOf(g, prev.settings?.daysPerWeek);
+      let lastDay = prev.lastCelebratedDay;
+      if (sess.date === today()) {
+        const beforeD = prev.sessions.filter((x) => x.date === sess.date).reduce((s, x) => s + (Number(x.metMinutes)||0), 0);
+        dailyCrossed = beforeD < dTarget && (beforeD + mm) >= dTarget && prev.lastCelebratedDay !== sess.date;
+        if (dailyCrossed) lastDay = sess.date;
+      }
+      return { ...prev, sessions: [...prev.sessions, sess], lastCelebratedWeek: weeklyCrossed ? ws : prev.lastCelebratedWeek, lastCelebratedDay: lastDay };
     });
-    if (crossed) showToast("You hit your weekly dose 🎉 — the activity level research associates with lower symptoms on average. Nicely done.");
-    else showToast(`Logged ${Math.round(sess.metMinutes)} MET-min · ${sess.mets} METs`);
+    if (weeklyCrossed) setCelebrate({ weekTotal });
+    else if (dailyCrossed) showToast("✓ Daily dose met — nice work today. 💙");
+    else showToast(`Logged ${Math.round(mm)} MET-min · ${sess.mets} METs`);
     setPage("overview");
   };
   const deleteSession = (id) => persist((prev) => ({ ...prev, sessions: prev.sessions.filter((x) => x.id !== id) }));
@@ -530,6 +551,7 @@ export default function App() {
 
       {settingsOpen && <SettingsModal data={data} persist={persist} settings={settings} onClose={() => setSettingsOpen(false)} onAbout={() => { setSettingsOpen(false); setAboutOpen(true); }} />}
       {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+      {celebrate && <CelebrateModal weekTotal={celebrate.weekTotal} goal={goal} condition={condition} onClose={() => setCelebrate(null)} />}
 
       {toast && (
         <div role="status" aria-live="polite" style={{ position:"fixed", bottom:96, left:"50%", transform:"translateX(-50%)", zIndex:50, animation:"toastUp 0.25s ease", background:toast.tone==="green"?T.green:T.accent, color:T.white, borderRadius:12, padding:"12px 18px", maxWidth:340, width:"90%", textAlign:"center", fontSize:13, fontWeight:500, boxShadow:"0 8px 24px rgba(30,50,90,0.25)", lineHeight:1.45 }}>
@@ -547,16 +569,23 @@ function OverviewPage({ data, persist, settings, condition, weekStart, goal, wee
   const pct = goal > 0 ? weekMM / goal : 0;
   const remaining = Math.max(0, goal - weekMM);
   const tier = doseTier(weekMM);
+  const weeklyMet = weekMM >= goal;
   const streak = data.streak || { current:0, best:0, freezes:0 };
   const hr = new Date().getHours();
   const greet = hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening";
+
+  // Daily dose = weekly goal spread across active days/week.
+  const dailyTarget = dailyTargetOf(goal, settings.daysPerWeek);
+  const todayMM = data.sessions.filter((x) => x.date === today()).reduce((s, x) => s + (Number(x.metMinutes)||0), 0);
+  const dailyMet = todayMM >= dailyTarget;
+  const dailyPct = dailyTarget > 0 ? todayMM / dailyTarget : 0;
 
   const days = useMemo(() => Array.from({ length:7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
     const ds = formatDate(d);
     const mm = data.sessions.filter((x) => x.date === ds).reduce((s, x) => s + (Number(x.metMinutes)||0), 0);
-    return { ds, day: DAYS[d.getDay()].slice(0,1), mm, isToday: ds === today() };
-  }), [data.sessions, today()]);
+    return { ds, day: DAYS[d.getDay()].slice(0,1), mm, isToday: ds === today(), met: mm >= dailyTarget };
+  }), [data.sessions, today(), dailyTarget]);
   const maxBar = Math.max(...days.map((d) => d.mm), 1);
   const daysAria = "Last 7 days, MET-minutes: " + days.map((d) => `${DAYS[new Date(d.ds+"T12:00:00").getDay()]} ${Math.round(d.mm)}`).join(", ");
 
@@ -582,7 +611,7 @@ function OverviewPage({ data, persist, settings, condition, weekStart, goal, wee
           </Ring>
           <div style={{ flex:1, minWidth:0 }}>
             <p style={{ margin:0, fontSize:22, fontFamily:F.serif, color:T.text, lineHeight:1.1 }}>{Math.round(weekMM)}<span style={{ fontSize:13, color:T.textDim, fontFamily:F.sans }}> / {goal} MET-min</span></p>
-            <p style={{ margin:"4px 0 0", fontSize:12.5, fontWeight:600, color:tier.color }}>{tier.label}</p>
+            <p style={{ margin:"4px 0 0", fontSize:12.5, fontWeight:600, color:tier.color }}>{weeklyMet ? "✓ " : ""}{tier.label}</p>
             <p style={{ margin:"3px 0 0", fontSize:12, color:T.textDim }}>{remaining > 0 ? <>Dose remaining → <strong style={{ color:T.textMid }}>{remainingBout(remaining)}</strong></> : "Weekly dose met for your goal 💙"}</p>
           </div>
         </div>
@@ -590,6 +619,21 @@ function OverviewPage({ data, persist, settings, condition, weekStart, goal, wee
           <p style={{ margin:0, fontSize:11, fontWeight:600, color:T.accent, textTransform:"uppercase", letterSpacing:"0.05em" }}>{condition.label} · {condition.effect}</p>
           <p style={{ margin:"4px 0 0", fontSize:12, color:T.textMid, lineHeight:1.45 }}>{condition.guidance} <span style={{ color:T.accent, fontWeight:600 }}>About the dose →</span></p>
         </button>
+      </Card>
+
+      <Card>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <p style={{ margin:0, fontSize:11, fontWeight:600, color:T.textDim, textTransform:"uppercase", letterSpacing:"0.06em" }}>Today</p>
+            <p style={{ margin:"4px 0 0", fontSize:18, fontFamily:F.serif, color:T.text }}>{Math.round(todayMM)} <span style={{ fontSize:12, color:T.textDim, fontFamily:F.sans }}>/ {dailyTarget} MET-min</span></p>
+          </div>
+          {dailyMet
+            ? <span style={{ display:"inline-flex", alignItems:"center", gap:6, background:T.greenDim, border:`1px solid ${T.greenBorder}`, color:T.green, borderRadius:20, padding:"7px 13px", fontSize:12.5, fontWeight:700, flexShrink:0 }}>✓ Daily dose met</span>
+            : <span style={{ fontSize:12, color:T.textDim, textAlign:"right", flexShrink:0 }}>{Math.max(0, dailyTarget - Math.round(todayMM))} MET-min to go</span>}
+        </div>
+        <div style={{ marginTop:10, height:6, background:T.surface, borderRadius:3 }} role="img" aria-label={`Today ${Math.round(todayMM)} of ${dailyTarget} MET-minutes${dailyMet ? ", daily dose met" : ""}`}>
+          <div style={{ height:"100%", width:`${Math.min(100, dailyPct*100)}%`, background:dailyMet?T.green:T.accent, borderRadius:3, transition:"width 0.4s ease" }} />
+        </div>
       </Card>
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
@@ -620,7 +664,7 @@ function OverviewPage({ data, persist, settings, condition, weekStart, goal, wee
         <div role="img" aria-label={daysAria} style={{ display:"flex", gap:6, alignItems:"flex-end", height:64 }}>
           {days.map((d) => (
             <div key={d.ds} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
-              <div style={{ width:"100%", height:`${Math.max((d.mm/maxBar)*48, d.mm>0?8:3)}px`, background:d.isToday?T.accent:d.mm>0?"rgba(79,113,160,0.35)":T.surface, borderRadius:4, transition:"height 0.3s ease", minHeight:3 }} />
+              <div style={{ width:"100%", height:`${Math.max((d.mm/maxBar)*48, d.mm>0?8:3)}px`, background:d.met?T.green:d.isToday?T.accent:d.mm>0?"rgba(79,113,160,0.35)":T.surface, borderRadius:4, transition:"height 0.3s ease", minHeight:3 }} />
               <span style={{ fontSize:10, fontWeight:d.isToday?700:400, color:d.isToday?T.accent:T.textDim, textTransform:"uppercase" }}>{d.day}</span>
             </div>
           ))}
@@ -905,6 +949,7 @@ function SettingsModal({ data, persist, settings, onClose, onAbout }) {
       age: clamp(s.age,1,120,35), restingHR: clamp(s.restingHR,30,120,60),
       maxHR: s.maxHR ? clamp(s.maxHR,100,230,null) : null, vo2max: s.vo2max ? clamp(s.vo2max,10,90,null) : null,
       metMax: clamp(s.metMax,1,25,10), weightLb: clamp(s.weightLb,50,600,160),
+      daysPerWeek: clamp(s.daysPerWeek,1,7,5),
     }, weeklyGoalMetMin: cleanGoal }));
     onClose();
   };
@@ -920,6 +965,10 @@ function SettingsModal({ data, persist, settings, onClose, onAbout }) {
       <Field label={`Weekly goal (MET-min) · min ${DOSE.MIN}, cap ${DOSE.OPTIMAL}`}>
         <input style={INP} inputMode="numeric" value={goal} onChange={(e)=>setGoal(e.target.value)} />
       </Field>
+      <Field label="Active days / week (sets your daily target)">
+        <input style={INP} inputMode="numeric" value={s.daysPerWeek} onChange={(e)=>set("daysPerWeek", e.target.value)} />
+      </Field>
+      <p style={{ margin:"-4px 0 16px", fontSize:11, color:T.textDim, lineHeight:1.5 }}>Daily target = weekly goal ÷ active days ≈ <strong>{dailyTargetOf(Number(goal)||DOSE.MIN, s.daysPerWeek)} MET-min/day</strong>.</p>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
         <Field label="Age"><input style={INP} inputMode="numeric" value={s.age} onChange={(e)=>set("age", e.target.value)} /></Field>
         <Field label="Resting HR (bpm)"><input style={INP} inputMode="numeric" value={s.restingHR} onChange={(e)=>set("restingHR", e.target.value)} /></Field>
@@ -989,6 +1038,27 @@ function Section({ title, children }) {
       <p style={{ margin:"0 0 5px", fontSize:13, fontWeight:700, color:T.text }}>{title}</p>
       <p style={{ margin:0, fontSize:12.5, color:T.textMid, lineHeight:1.6 }}>{children}</p>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CELEBRATION — weekly dose reached (names the associated effect size)
+// ─────────────────────────────────────────────────────────────────────────────
+function CelebrateModal({ weekTotal, goal, condition, onClose }) {
+  return (
+    <Modal title="Weekly dose reached" onClose={onClose}>
+      <div style={{ textAlign:"center", padding:"4px 0 6px" }}>
+        <div style={{ fontSize:46, marginBottom:6 }}>🎉</div>
+        <p style={{ margin:"0 0 4px", fontSize:30, fontFamily:F.serif, color:T.green, lineHeight:1.1 }}>{Math.round(weekTotal)} <span style={{ fontSize:15, color:T.textDim, fontFamily:F.sans }}>MET-min</span></p>
+        <p style={{ margin:"0 0 16px", fontSize:13, color:T.textMid }}>You cleared this week's {goal} MET-min goal.</p>
+      </div>
+      <div style={{ background:T.greenDim, border:`1px solid ${T.greenBorder}`, borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
+        <p style={{ margin:0, fontSize:13, color:T.textMid, lineHeight:1.6 }}>
+          At this level, {condition.celebrate}. That's an <strong>association from research, not a guarantee</strong> — and consistency is what compounds. Keep going. 💙
+        </p>
+      </div>
+      <PrimaryBtn onClick={onClose} style={{ width:"100%" }}>Keep it up</PrimaryBtn>
+    </Modal>
   );
 }
 
