@@ -38,7 +38,23 @@ const MODALITIES = [
 //   Minimum-effective ≈ 600 MET-min/wk (~150 min moderate / ~10 MET-h)
 //   Optimal plateau   ≈ 1800 MET-min/wk (~30 MET-h) — cap; do NOT push higher.
 // ─────────────────────────────────────────────────────────────────────────────
-const DOSE = { MIN: 600, OPTIMAL: 1800 };
+const DOSE = { FLOOR: 300, MIN: 600, OPTIMAL: 1800 };
+
+// Label the evidence tier of a chosen weekly GOAL (not the accumulated volume).
+function goalTier(goal) {
+  const g = Number(goal) || 0;
+  if (g >= DOSE.OPTIMAL) return { label:"Optimal plateau — capped on purpose; more isn't better", color:T.green };
+  if (g >= 1200)         return { label:"Upper evidence-based range", color:T.green };
+  if (g >= DOSE.MIN)     return { label:"Minimum-effective range (≈150 min moderate/wk)", color:T.green };
+  return { label:"Gentle start — below the minimum-effective dose, but light activity still helps", color:T.accent };
+}
+
+const DOSE_PRESETS = [
+  { v:300,  label:"Gentle" },
+  { v:600,  label:"Min-effective" },
+  { v:1200, label:"Build" },
+  { v:1800, label:"Optimal" },
+];
 
 const CONDITIONS = {
   depression: {
@@ -460,6 +476,7 @@ export default function App() {
   const [page, setPage] = useState("overview");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [celebrate, setCelebrate] = useState(null);
 
@@ -530,7 +547,7 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth:560, margin:"0 auto", padding:"20px 16px 0" }}>
-        {page === "overview" && <OverviewPage data={data} persist={persist} settings={settings} condition={condition} weekStart={weekStart} goal={goal} weekMM={weekMM} setPage={setPage} onAbout={() => setAboutOpen(true)} />}
+        {page === "overview" && <OverviewPage data={data} persist={persist} settings={settings} condition={condition} weekStart={weekStart} goal={goal} weekMM={weekMM} setPage={setPage} onAbout={() => setAboutOpen(true)} onAdjust={() => setAdjustOpen(true)} />}
         {page === "log" && <LogPage settings={settings} onSave={saveSession} />}
         {page === "analytics" && <AnalyticsPage data={data} settings={settings} weekStart={weekStart} goal={goal} weekMM={weekMM} onImport={importSessions} toast={showToast} />}
         {page === "history" && <HistoryPage data={data} settings={settings} onDelete={deleteSession} />}
@@ -551,6 +568,7 @@ export default function App() {
 
       {settingsOpen && <SettingsModal data={data} persist={persist} settings={settings} onClose={() => setSettingsOpen(false)} onAbout={() => { setSettingsOpen(false); setAboutOpen(true); }} />}
       {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+      {adjustOpen && <AdjustDoseModal data={data} persist={persist} settings={settings} onClose={() => setAdjustOpen(false)} />}
       {celebrate && <CelebrateModal weekTotal={celebrate.weekTotal} goal={goal} condition={condition} onClose={() => setCelebrate(null)} />}
 
       {toast && (
@@ -565,7 +583,7 @@ export default function App() {
 // ─────────────────────────────────────────────────────────────────────────────
 // OVERVIEW
 // ─────────────────────────────────────────────────────────────────────────────
-function OverviewPage({ data, persist, settings, condition, weekStart, goal, weekMM, setPage, onAbout }) {
+function OverviewPage({ data, persist, settings, condition, weekStart, goal, weekMM, setPage, onAbout, onAdjust }) {
   const pct = goal > 0 ? weekMM / goal : 0;
   const remaining = Math.max(0, goal - weekMM);
   const tier = doseTier(weekMM);
@@ -603,6 +621,10 @@ function OverviewPage({ data, persist, settings, condition, weekStart, goal, wee
       <Disclaimer compact />
 
       <Card>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+          <p style={{ margin:0, fontSize:11, fontWeight:600, color:T.textDim, textTransform:"uppercase", letterSpacing:"0.06em" }}>Weekly dose</p>
+          <button onClick={onAdjust} style={{ background:T.surface, border:`1px solid ${T.borderAlt}`, borderRadius:20, color:T.accent, cursor:"pointer", fontSize:12, fontWeight:600, padding:"8px 14px", minHeight:36, fontFamily:F.sans }}>Adjust dose ⚙</button>
+        </div>
         <div style={{ display:"flex", alignItems:"center", gap:18 }}>
           <Ring pct={pct} size={92} stroke={9} color={weekMM >= goal ? T.green : T.accent}>
             <div style={{ textAlign:"center" }}>
@@ -938,13 +960,78 @@ function HistoryPage({ data, settings, onDelete }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// DOSE ADJUSTER — presets + slider for the weekly MET-min goal.
+// Daily target derives live (goal ÷ active days); every dose-driven element
+// (ring, remaining bout, daily card, green bars, streak grading) follows.
+// ─────────────────────────────────────────────────────────────────────────────
+function DoseAdjuster({ goal, onGoal, daysPerWeek, onDaysPerWeek }) {
+  const g = Math.min(DOSE.OPTIMAL, Math.max(DOSE.FLOOR, Number(goal) || DOSE.MIN));
+  const tier = goalTier(g);
+  const daily = dailyTargetOf(g, daysPerWeek);
+  return (
+    <div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
+        {DOSE_PRESETS.map((p) => {
+          const active = g === p.v;
+          return (
+            <button key={p.v} onClick={() => onGoal(p.v)}
+              style={{ flex:"1 1 auto", padding:"9px 10px", borderRadius:12, border:`1px solid ${active?T.accent:T.border}`, background:active?T.accentSoft:T.card, color:active?T.accent:T.textMid, fontWeight:600, fontSize:12, cursor:"pointer", minHeight:44, textAlign:"center" }}>
+              <span style={{ display:"block", fontSize:15, fontFamily:F.serif, color:active?T.accent:T.text }}>{p.v}</span>
+              {p.label}
+            </button>
+          );
+        })}
+      </div>
+      <input type="range" min={DOSE.FLOOR} max={DOSE.OPTIMAL} step={30} value={g}
+        onChange={(e) => onGoal(Number(e.target.value))} aria-label="Weekly MET-minute goal"
+        style={{ width:"100%", accentColor:T.accent, minHeight:44, cursor:"pointer" }} />
+      <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between", gap:10, marginTop:2 }}>
+        <p style={{ margin:0, fontSize:20, fontFamily:F.serif, color:T.text }}>{g} <span style={{ fontSize:12, color:T.textDim, fontFamily:F.sans }}>MET-min / week</span></p>
+        <p style={{ margin:0, fontSize:13, fontWeight:600, color:T.accent }}>≈ {daily} / day</p>
+      </div>
+      <p style={{ margin:"6px 0 12px", fontSize:11.5, fontWeight:600, color:tier.color, lineHeight:1.45 }}>{tier.label}</p>
+      {onDaysPerWeek && (
+        <div>
+          <label style={LBL}>Active days / week (sets the daily dose)</label>
+          <div style={{ display:"flex", gap:6 }}>
+            {[3,4,5,6,7].map((n) => (
+              <button key={n} onClick={() => onDaysPerWeek(n)}
+                style={{ flex:1, minHeight:44, borderRadius:10, border:`1px solid ${Number(daysPerWeek)===n?T.accent:T.border}`, background:Number(daysPerWeek)===n?T.accentSoft:T.card, color:Number(daysPerWeek)===n?T.accent:T.textMid, fontWeight:600, fontSize:14, cursor:"pointer" }}>{n}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdjustDoseModal({ data, persist, settings, onClose }) {
+  const [goal, setGoal] = useState(Math.min(DOSE.OPTIMAL, Math.max(DOSE.FLOOR, Number(data.weeklyGoalMetMin) || DOSE.MIN)));
+  const [dpw, setDpw] = useState(Math.min(7, Math.max(1, Number(settings.daysPerWeek) || 5)));
+  const save = () => {
+    persist((p) => ({ ...p, weeklyGoalMetMin: goal, settings: { ...p.settings, daysPerWeek: dpw } }));
+    onClose();
+  };
+  return (
+    <Modal title="Adjust your dose" onClose={onClose}>
+      <p style={{ margin:"0 0 14px", fontSize:12.5, color:T.textMid, lineHeight:1.55 }}>Pick the weekly MET-minute dose that feels sustainable — the daily target, ring, and streak grading all follow. Consistency beats volume.</p>
+      <DoseAdjuster goal={goal} onGoal={setGoal} daysPerWeek={dpw} onDaysPerWeek={setDpw} />
+      <div style={{ display:"flex", gap:10, marginTop:16 }}>
+        <GhostBtn onClick={onClose} style={{ flex:1 }}>Cancel</GhostBtn>
+        <PrimaryBtn onClick={save} style={{ flex:2 }}>Save dose</PrimaryBtn>
+      </div>
+    </Modal>
+  );
+}
+
 function SettingsModal({ data, persist, settings, onClose, onAbout }) {
   const [s, setS] = useState(settings);
   const [goal, setGoal] = useState(data.weeklyGoalMetMin || DOSE.MIN);
   const set = (k, v) => setS((p) => ({ ...p, [k]: v }));
   const clamp = (v, lo, hi, dflt) => { const n = Number(v); return isNaN(n) ? dflt : Math.min(hi, Math.max(lo, n)); };
   const save = () => {
-    const cleanGoal = Math.min(DOSE.OPTIMAL, Math.max(100, Number(goal) || DOSE.MIN));
+    const cleanGoal = Math.min(DOSE.OPTIMAL, Math.max(DOSE.FLOOR, Number(goal) || DOSE.MIN));
     persist((p) => ({ ...p, settings: { ...p.settings, ...s,
       age: clamp(s.age,1,120,35), restingHR: clamp(s.restingHR,30,120,60),
       maxHR: s.maxHR ? clamp(s.maxHR,100,230,null) : null, vo2max: s.vo2max ? clamp(s.vo2max,10,90,null) : null,
@@ -962,13 +1049,9 @@ function SettingsModal({ data, persist, settings, onClose, onAbout }) {
           <option value="anxiety">Anxiety</option>
         </select>
       </Field>
-      <Field label={`Weekly goal (MET-min) · min ${DOSE.MIN}, cap ${DOSE.OPTIMAL}`}>
-        <input style={INP} inputMode="numeric" value={goal} onChange={(e)=>setGoal(e.target.value)} />
+      <Field label={`Weekly dose (MET-min) · ${DOSE.FLOOR}–${DOSE.OPTIMAL}`}>
+        <DoseAdjuster goal={goal} onGoal={setGoal} daysPerWeek={s.daysPerWeek} onDaysPerWeek={(n)=>set("daysPerWeek", n)} />
       </Field>
-      <Field label="Active days / week (sets your daily target)">
-        <input style={INP} inputMode="numeric" value={s.daysPerWeek} onChange={(e)=>set("daysPerWeek", e.target.value)} />
-      </Field>
-      <p style={{ margin:"-4px 0 16px", fontSize:11, color:T.textDim, lineHeight:1.5 }}>Daily target = weekly goal ÷ active days ≈ <strong>{dailyTargetOf(Number(goal)||DOSE.MIN, s.daysPerWeek)} MET-min/day</strong>.</p>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
         <Field label="Age"><input style={INP} inputMode="numeric" value={s.age} onChange={(e)=>set("age", e.target.value)} /></Field>
         <Field label="Resting HR (bpm)"><input style={INP} inputMode="numeric" value={s.restingHR} onChange={(e)=>set("restingHR", e.target.value)} /></Field>
